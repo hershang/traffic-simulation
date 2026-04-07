@@ -16,6 +16,42 @@ const trafficSystem = {
   transitionInProgress: false  // Guards against overlapping transitions (race condition)
 };
 
+/* ========== TIMER CONFIG + HELPERS ==========
+ * All timer-related values and helpers are grouped here so timing behavior is
+ * easy to maintain in one place.
+ */
+const TIMER_DELAYS = {
+  vehicleYellowMs: 3000, // Vehicle yellow safety buffer
+  allRedBufferMs: 1000,  // Short all-red buffer before opposite lane goes green
+  pedestrianPrepMs: 3000, // Time to safely stop active vehicle lane
+  pedestrianYellowMs: 4000 // Countdown before pedestrian green
+};
+
+/** Tracks pending timeout IDs so we can clear them if needed. */
+const timerState = {
+  pendingTimeouts: new Set()
+};
+
+/**
+ * Wait helper for async sequences.
+ * Uses setTimeout under the hood and tracks timeout IDs for cleanup/control.
+ */
+function wait(ms) {
+  return new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      timerState.pendingTimeouts.delete(timeoutId);
+      resolve();
+    }, ms);
+    timerState.pendingTimeouts.add(timeoutId);
+  });
+}
+
+/** Clears any tracked timeouts that haven't fired yet. */
+function clearAllPendingTimers() {
+  timerState.pendingTimeouts.forEach((timeoutId) => clearTimeout(timeoutId));
+  timerState.pendingTimeouts.clear();
+}
+
 /** DOM element references — populated in init() after DOM is ready */
 let transitionBtn = null;
 let pedestrianBtn = null;
@@ -102,13 +138,13 @@ async function transitionLights() {
       updateUI();
       logEvent('N-S → Yellow (buffer 3s).');
 
-      await new Promise(resolve => setTimeout(resolve, 3000)); // 3s yellow buffer
+      await wait(TIMER_DELAYS.vehicleYellowMs);
 
       trafficSystem.northSouth = 'red';
       updateUI();
       logEvent('N-S → Red.');
 
-      await new Promise(resolve => setTimeout(resolve, 1000)); // 1s all-red buffer
+      await wait(TIMER_DELAYS.allRedBufferMs);
 
       trafficSystem.eastWest = 'green';
       updateUI();
@@ -120,13 +156,13 @@ async function transitionLights() {
       updateUI();
       logEvent('E-W → Yellow (buffer 3s).');
 
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await wait(TIMER_DELAYS.vehicleYellowMs);
 
       trafficSystem.eastWest = 'red';
       updateUI();
       logEvent('E-W → Red.');
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await wait(TIMER_DELAYS.allRedBufferMs);
 
       trafficSystem.northSouth = 'green';
       updateUI();
@@ -180,7 +216,7 @@ async function runPedestrianSequence() {
       updateUI();
       logEvent('Pedestrian phase: E-W → Yellow (3s).');
 
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await wait(TIMER_DELAYS.pedestrianPrepMs);
 
       trafficSystem.eastWest = 'red';
       updateUI();
@@ -191,7 +227,7 @@ async function runPedestrianSequence() {
       updateUI();
       logEvent('Pedestrian phase: N-S → Yellow (3s).');
 
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await wait(TIMER_DELAYS.pedestrianPrepMs);
 
       trafficSystem.northSouth = 'red';
       updateUI();
@@ -201,7 +237,7 @@ async function runPedestrianSequence() {
       trafficSystem.pedestrian = 'red';
       updateUI();
       logEvent('Pedestrian phase: vehicles already red, waiting 3s.');
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await wait(TIMER_DELAYS.pedestrianPrepMs);
     }
 
     // Ensure both directions are hard red before granting walk.
@@ -214,7 +250,7 @@ async function runPedestrianSequence() {
     updateUI();
     logEvent('Pedestrian → Yellow (4s before walk).');
 
-    await new Promise(resolve => setTimeout(resolve, 4000));
+    await wait(TIMER_DELAYS.pedestrianYellowMs);
 
     trafficSystem.pedestrian = 'green';
     updateUI();
@@ -286,9 +322,9 @@ function init() {
   lightElements.ew.red    = document.querySelector('#ew-red');
   lightElements.ew.yellow = document.querySelector('#ew-yellow');
   lightElements.ew.green  = document.querySelector('#ew-green');
-   lightElements.ped.red    = document.querySelector('#ped-red');
-   lightElements.ped.yellow = document.querySelector('#ped-yellow');
-   lightElements.ped.green  = document.querySelector('#ped-green');
+  lightElements.ped.red    = document.querySelector('#ped-red');
+  lightElements.ped.yellow = document.querySelector('#ped-yellow');
+  lightElements.ped.green  = document.querySelector('#ped-green');
 
   updateUI();
   logEvent('System ready. N-S Green, E-W Red.');
@@ -307,6 +343,9 @@ function init() {
     btn.addEventListener('click', () => handleManualColor(dir, color));
   });
 }
+
+/* Cleanup timer resources when leaving/reloading the page. */
+window.addEventListener('beforeunload', clearAllPendingTimers);
 
 /* Start the application when the script executes. */
 init();
