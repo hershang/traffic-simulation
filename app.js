@@ -16,6 +16,20 @@ const trafficSystem = {
   transitionInProgress: false  // Guards against overlapping transitions (race condition)
 };
 
+/* ========== PEDESTRIAN REQUEST STATE ==========
+ * These flags represent the pedestrian request lifecycle:
+ * - isWaiting: request button pressed and waiting for safe crossing window
+ * - isCrossing: pedestrian phase is currently active
+ * - hasCrossed: last pedestrian phase completed (presentation/debug aid)
+ * - requestPending: queue flag to avoid duplicate rapid requests
+ */
+const pedestrianState = {
+  isWaiting: false,
+  isCrossing: false,
+  hasCrossed: false,
+  requestPending: false
+};
+
 /** DOM element references — populated in init() after DOM is ready */
 let transitionBtn = null;
 let pedestrianBtn = null;
@@ -137,6 +151,9 @@ async function transitionLights() {
     trafficSystem.transitionInProgress = false;
     if (transitionBtn) transitionBtn.disabled = false;
     if (pedestrianBtn) pedestrianBtn.disabled = false;
+
+    // If a pedestrian request arrived during this transition, handle it next.
+    processPedestrianRequestQueue();
   }
 }
 
@@ -162,15 +179,19 @@ function handleLogic() {
  * waiting so the UI stays responsive.
  */
 async function runPedestrianSequence() {
-  if (trafficSystem.transitionInProgress) {
-    logEvent('Ignored pedestrian request: transition already in progress.');
+  if (trafficSystem.transitionInProgress || pedestrianState.isCrossing) {
     return;
   }
+
+  pedestrianState.isWaiting = false;
+  pedestrianState.isCrossing = true;
+  pedestrianState.hasCrossed = false;
+  pedestrianState.requestPending = false;
 
   trafficSystem.transitionInProgress = true;
   if (transitionBtn) transitionBtn.disabled = true;
   if (pedestrianBtn) pedestrianBtn.disabled = true;
-  logEvent('Pedestrian request received.');
+  logEvent('Pedestrian crossing started.');
 
   try {
     // Phase 1 (~3s): bring any green vehicle direction to red.
@@ -220,18 +241,51 @@ async function runPedestrianSequence() {
     updateUI();
     logEvent('Pedestrian → Green (walk). Both vehicle directions are Red.');
   } finally {
+    // Reset pedestrian request lifecycle after crossing finishes.
+    pedestrianState.isCrossing = false;
+    pedestrianState.isWaiting = false;
+    pedestrianState.requestPending = false;
+    pedestrianState.hasCrossed = true;
+
     trafficSystem.transitionInProgress = false;
     if (transitionBtn) transitionBtn.disabled = false;
     if (pedestrianBtn) pedestrianBtn.disabled = false;
   }
 }
 
+/* ========== processPedestrianRequestQueue() ==========
+ * Starts pedestrian crossing only when the system is free.
+ * This acts like a simple one-slot queue using requestPending.
+ */
+function processPedestrianRequestQueue() {
+  if (!pedestrianState.requestPending) return;
+  if (trafficSystem.transitionInProgress || pedestrianState.isCrossing) return;
+  runPedestrianSequence();
+}
+
 /* ========== handlePedestrianRequest() ==========
- * Click handler for the pedestrian button. Delegates to the async sequence
- * without blocking the main thread.
+ * Pedestrian button handler:
+ * 1) Save a pending request (queue flag)
+ * 2) Ignore rapid duplicate presses
+ * 3) Start crossing now if system is available
  */
 function handlePedestrianRequest() {
-  runPedestrianSequence();
+  if (pedestrianState.isCrossing) {
+    logEvent('Ignored pedestrian request: crossing already active.');
+    return;
+  }
+
+  if (pedestrianState.requestPending) {
+    logEvent('Ignored pedestrian request: already queued.');
+    return;
+  }
+
+  pedestrianState.requestPending = true;
+  pedestrianState.isWaiting = true;
+  pedestrianState.hasCrossed = false;
+  logEvent('Pedestrian request queued.');
+
+  processPedestrianRequestQueue();
 }
 
 /* ========== handleManualColor() ==========
