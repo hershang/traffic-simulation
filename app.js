@@ -16,6 +16,25 @@ const trafficSystem = {
   transitionInProgress: false  // Guards against overlapping transitions (race condition)
 };
 
+/* ========== TRAFFIC LIGHT STATES ==========
+ * Beginner-friendly constants for the 3 light colors.
+ */
+const LIGHT_STATES = {
+  RED: 'red',
+  YELLOW: 'yellow',
+  GREEN: 'green'
+};
+
+/* Current state for the main traffic-light logic (N-S direction). */
+let currentTrafficState = LIGHT_STATES.GREEN;
+
+/* Simple loop map: RED -> GREEN -> YELLOW -> RED */
+const NEXT_LIGHT_STATE = {
+  [LIGHT_STATES.RED]: LIGHT_STATES.GREEN,
+  [LIGHT_STATES.GREEN]: LIGHT_STATES.YELLOW,
+  [LIGHT_STATES.YELLOW]: LIGHT_STATES.RED
+};
+
 /** DOM element references — populated in init() after DOM is ready */
 let transitionBtn = null;
 let pedestrianBtn = null;
@@ -70,74 +89,43 @@ function logEvent(message) {
   logList.scrollTop = logList.scrollHeight;
 }
 
-/* ========== transitionLights() ==========
- * Async function that performs one full transition cycle with Yellow buffer.
- * Control Flow:
- *   1. If a transition is already running, return immediately (race protection).
- *   2. Set transitionInProgress = true so further clicks are ignored.
- *   3. If NS is green: NS -> Yellow (3s) -> Red, wait 1s, then EW -> Green.
- *   4. If EW is green: EW -> Yellow (3s) -> Red, wait 1s, then NS -> Green.
- *   5. Clear transitionInProgress and re-enable the button.
- * Event Loop: Each await yields to the event loop; after the timeout, the
- * engine resumes this function. This prevents blocking the main thread while
- * waiting. No two lights are ever Green or Yellow at the same time because
- * we only set one direction to green after the other is fully red + 1s buffer.
+/* ========== applyTrafficState() ==========
+ * Converts the single `currentTrafficState` into lane lights:
+ * - N-S uses current state directly.
+ * - E-W uses opposite behavior:
+ *   - If N-S is GREEN or YELLOW, E-W stays RED.
+ *   - If N-S is RED, E-W becomes GREEN.
  */
-async function transitionLights() {
-  if (trafficSystem.transitionInProgress) {
-    logEvent('Ignored: transition already in progress.');
-    return;
+function applyTrafficState() {
+  trafficSystem.northSouth = currentTrafficState;
+
+  if (currentTrafficState === LIGHT_STATES.RED) {
+    trafficSystem.eastWest = LIGHT_STATES.GREEN;
+  } else {
+    trafficSystem.eastWest = LIGHT_STATES.RED;
   }
 
-  trafficSystem.transitionInProgress = true;
-  if (transitionBtn) transitionBtn.disabled = true;
-  if (pedestrianBtn) pedestrianBtn.disabled = true;
-  logEvent('Transition started.');
+  // Placeholder: pedestrian logic is handled in a separate branch/module.
+  trafficSystem.pedestrian = LIGHT_STATES.RED;
+}
 
-  try {
-    if (trafficSystem.northSouth === 'green') {
-      // NS was green -> turn NS yellow, then red, then EW green
-      trafficSystem.northSouth = 'yellow';
-      trafficSystem.eastWest = 'red';
-      updateUI();
-      logEvent('N-S → Yellow (buffer 3s).');
+/* ========== nextLight() ==========
+ * Main traffic-light transition function.
+ * Sequence: RED -> GREEN -> YELLOW -> RED (loops forever on each click).
+ */
+function nextLight() {
+  currentTrafficState = NEXT_LIGHT_STATE[currentTrafficState];
+  applyTrafficState();
+  updateUI();
+  logEvent(`Traffic state changed: N-S -> ${currentTrafficState.toUpperCase()}.`);
+}
 
-      await new Promise(resolve => setTimeout(resolve, 3000)); // 3s yellow buffer
-
-      trafficSystem.northSouth = 'red';
-      updateUI();
-      logEvent('N-S → Red.');
-
-      await new Promise(resolve => setTimeout(resolve, 1000)); // 1s all-red buffer
-
-      trafficSystem.eastWest = 'green';
-      updateUI();
-      logEvent('E-W → Green.');
-    } else if (trafficSystem.eastWest === 'green') {
-      // EW was green -> turn EW yellow, then red, then NS green
-      trafficSystem.eastWest = 'yellow';
-      trafficSystem.northSouth = 'red';
-      updateUI();
-      logEvent('E-W → Yellow (buffer 3s).');
-
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      trafficSystem.eastWest = 'red';
-      updateUI();
-      logEvent('E-W → Red.');
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      trafficSystem.northSouth = 'green';
-      updateUI();
-      logEvent('N-S → Green.');
-    }
-    logEvent('Transition complete.');
-  } finally {
-    trafficSystem.transitionInProgress = false;
-    if (transitionBtn) transitionBtn.disabled = false;
-    if (pedestrianBtn) pedestrianBtn.disabled = false;
-  }
+/* ========== transitionLights() ==========
+ * Alias wrapper so existing button wiring still works.
+ * No timer logic here; one click = one state step.
+ */
+function transitionLights() {
+  nextLight();
 }
 
 /* ========== handleLogic() ==========
@@ -152,78 +140,11 @@ function handleLogic() {
 }
 
 /* ========== runPedestrianSequence() ==========
- * Async sequence for pedestrian crossing:
- *   - Starts from current vehicle state; brings any green direction safely to red.
- *   - Total time ~7 seconds from button press until pedestrian green.
- *   - First ~3s: whichever vehicle direction is green turns yellow then red.
- *   - Next 4s: pedestrian shows yellow countdown, then turns green once both
- *     vehicle directions are fully red.
- * Event Loop: Uses await with setTimeout-based Promises to yield control while
- * waiting so the UI stays responsive.
+ * Placeholder only for this branch.
+ * Full pedestrian flow should be implemented in the pedestrian branch.
  */
-async function runPedestrianSequence() {
-  if (trafficSystem.transitionInProgress) {
-    logEvent('Ignored pedestrian request: transition already in progress.');
-    return;
-  }
-
-  trafficSystem.transitionInProgress = true;
-  if (transitionBtn) transitionBtn.disabled = true;
-  if (pedestrianBtn) pedestrianBtn.disabled = true;
-  logEvent('Pedestrian request received.');
-
-  try {
-    // Phase 1 (~3s): bring any green vehicle direction to red.
-    if (trafficSystem.eastWest === 'green') {
-      trafficSystem.eastWest = 'yellow';
-      trafficSystem.pedestrian = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: E-W → Yellow (3s).');
-
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      trafficSystem.eastWest = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: E-W → Red.');
-    } else if (trafficSystem.northSouth === 'green') {
-      trafficSystem.northSouth = 'yellow';
-      trafficSystem.pedestrian = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: N-S → Yellow (3s).');
-
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      trafficSystem.northSouth = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: N-S → Red.');
-    } else {
-      // Already all red; just wait 3s to preserve overall timing.
-      trafficSystem.pedestrian = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: vehicles already red, waiting 3s.');
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-
-    // Ensure both directions are hard red before granting walk.
-    trafficSystem.northSouth = 'red';
-    trafficSystem.eastWest = 'red';
-    updateUI();
-
-    // Phase 2 (4s): pedestrian yellow countdown then green.
-    trafficSystem.pedestrian = 'yellow';
-    updateUI();
-    logEvent('Pedestrian → Yellow (4s before walk).');
-
-    await new Promise(resolve => setTimeout(resolve, 4000));
-
-    trafficSystem.pedestrian = 'green';
-    updateUI();
-    logEvent('Pedestrian → Green (walk). Both vehicle directions are Red.');
-  } finally {
-    trafficSystem.transitionInProgress = false;
-    if (transitionBtn) transitionBtn.disabled = false;
-    if (pedestrianBtn) pedestrianBtn.disabled = false;
-  }
+function runPedestrianSequence() {
+  logEvent('Pedestrian placeholder: waiting for pedestrian branch implementation.');
 }
 
 /* ========== handlePedestrianRequest() ==========
@@ -290,6 +211,8 @@ function init() {
    lightElements.ped.yellow = document.querySelector('#ped-yellow');
    lightElements.ped.green  = document.querySelector('#ped-green');
 
+  // Sync UI with the traffic-light state machine at startup.
+  applyTrafficState();
   updateUI();
   logEvent('System ready. N-S Green, E-W Red.');
 
