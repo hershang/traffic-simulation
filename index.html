@@ -16,24 +16,25 @@
     <main class="dashboard-grid">
       <!-- Visual Simulation: center area -->
       <section class="simulation" aria-label="Traffic light visual simulation">
-        <div class="manual-controls" aria-label="Manual light override">
-          <h2 class="manual-title">Manual Override</h2>
-          <div class="control-group">
-            <span class="lane-label">N-S</span>
-            <div class="control-buttons">
-              <button type="button" class="color-btn color-btn-red" data-dir="ns" data-color="red" aria-label="Set N-S Red"></button>
-              <button type="button" class="color-btn color-btn-yellow" data-dir="ns" data-color="yellow" aria-label="Set N-S Yellow"></button>
-              <button type="button" class="color-btn color-btn-green" data-dir="ns" data-color="green" aria-label="Set N-S Green"></button>
-            </div>
+        <div class="timer-controls" aria-label="Traffic timer controls">
+          <h2 class="timer-title">Timer Controls</h2>
+
+          <div class="timer-row">
+            <label for="timer-mode">Mode</label>
+            <select id="timer-mode" aria-label="Select timer mode">
+              <option value="automatic" selected>Automatic (15s)</option>
+              <option value="custom">Custom</option>
+            </select>
           </div>
-          <div class="control-group">
-            <span class="lane-label">E-W</span>
-            <div class="control-buttons">
-              <button type="button" class="color-btn color-btn-red" data-dir="ew" data-color="red" aria-label="Set E-W Red"></button>
-              <button type="button" class="color-btn color-btn-yellow" data-dir="ew" data-color="yellow" aria-label="Set E-W Yellow"></button>
-              <button type="button" class="color-btn color-btn-green" data-dir="ew" data-color="green" aria-label="Set E-W Green"></button>
-            </div>
+
+          <div class="timer-row">
+            <label for="timer-seconds">Duration (seconds)</label>
+            <input id="timer-seconds" type="number" min="1" step="1" value="15" aria-label="Custom timer duration in seconds">
           </div>
+
+          <p class="timer-help" id="timer-help-text">
+            Automatic mode uses 15 seconds per green phase.
+          </p>
         </div>
 
         <div class="intersection-container">
@@ -62,9 +63,6 @@
             </div>
           </div>
         </div>
-        <button type="button" class="transition-btn" id="transition-btn" aria-label="Switch active traffic direction">
-          Switch Direction
-        </button>
         <button type="button" class="transition-btn pedestrian-btn" id="pedestrian-btn" aria-label="Request pedestrian crossing">
           Pedestrian Request
         </button>

@@ -1,41 +1,57 @@
 /**
- * Intelligent Traffic Control Dashboard — Application Logic
- * State machine for two intersections (North–South, East–West) with safe
- * transitions and race-condition protection. Uses async/await and the
- * Event Loop for non-blocking timing.
+ * Intelligent Traffic Control Dashboard — Timer Branch Logic
+ * Focus: automatic light cycling with selectable timer duration.
  */
 
 /* ========== STATE OBJECT ==========
- * Single source of truth. Only these values drive the UI and transition logic.
- * Invariant: Never both NS and EW green or yellow at the same time.
+ * Single source of truth for the current visible light states.
  */
 const trafficSystem = {
-  northSouth: 'green',   // 'green' | 'yellow' | 'red'
-  eastWest: 'red',       // 'green' | 'yellow' | 'red'
-  pedestrian: 'red',     // 'green' | 'yellow' | 'red'
-  transitionInProgress: false  // Guards against overlapping transitions (race condition)
+  northSouth: 'green',
+  eastWest: 'red',
+  pedestrian: 'red',
+  transitionInProgress: false
 };
 
-/* ========== TIMER CONFIG + HELPERS ==========
- * All timer-related values and helpers are grouped here so timing behavior is
- * easy to maintain in one place.
+/* ========== TIMER CONFIG ==========
+ * mainGreenMs: selected duration for each green phase.
+ * vehicleYellowMs/allRedBufferMs scale from mainGreenMs.
  */
 const TIMER_DELAYS = {
-  vehicleYellowMs: 3000, // Vehicle yellow safety buffer
-  allRedBufferMs: 1000,  // Short all-red buffer before opposite lane goes green
-  pedestrianPrepMs: 3000, // Time to safely stop active vehicle lane
-  pedestrianYellowMs: 4000 // Countdown before pedestrian green
+  mainGreenMs: 15000,
+  vehicleYellowMs: 3000,
+  allRedBufferMs: 1500,
+  pedestrianPrepMs: 3000,
+  pedestrianYellowMs: 4000
 };
 
-/** Tracks pending timeout IDs so we can clear them if needed. */
+/* Track active timer IDs so we can cleanly stop/restart. */
 const timerState = {
-  pendingTimeouts: new Set()
+  pendingTimeouts: new Set(),
+  autoCycleTimeout: null
 };
 
-/**
- * Wait helper for async sequences.
- * Uses setTimeout under the hood and tracks timeout IDs for cleanup/control.
- */
+/* Timer settings shown in the UI. */
+const timerSettings = {
+  mode: 'automatic',
+  customSeconds: 15,
+  activeSeconds: 15,
+  autoDefaultSeconds: 15
+};
+
+/** DOM element references */
+let pedestrianBtn = null;
+let logList = null;
+let timerModeSelect = null;
+let timerSecondsInput = null;
+let timerHelpText = null;
+
+const lightElements = {
+  ns: { red: null, yellow: null, green: null },
+  ew: { red: null, yellow: null, green: null },
+  ped: { red: null, yellow: null, green: null }
+};
+
 function wait(ms) {
   return new Promise((resolve) => {
     const timeoutId = setTimeout(() => {
@@ -46,31 +62,16 @@ function wait(ms) {
   });
 }
 
-/** Clears any tracked timeouts that haven't fired yet. */
 function clearAllPendingTimers() {
   timerState.pendingTimeouts.forEach((timeoutId) => clearTimeout(timeoutId));
   timerState.pendingTimeouts.clear();
+
+  if (timerState.autoCycleTimeout) {
+    clearTimeout(timerState.autoCycleTimeout);
+    timerState.autoCycleTimeout = null;
+  }
 }
 
-/** DOM element references — populated in init() after DOM is ready */
-let transitionBtn = null;
-let pedestrianBtn = null;
-let logList = null;
-let colorButtons = [];
-
-/** Light element maps: direction -> { red, yellow, green } for classList.toggle */
-const lightElements = {
-  ns: { red: null, yellow: null, green: null },
-  ew: { red: null, yellow: null, green: null },
-  ped: { red: null, yellow: null, green: null }
-};
-
-/* ========== updateUI() ==========
- * Control Flow: Reads trafficSystem state and syncs the DOM. Uses classList.toggle
- * to add/remove the "on" class so only the active light per pole appears lit.
- * Event Loop: This runs synchronously; it does not schedule any microtasks or
- * macrotasks. Called after every state change so the UI always reflects state.
- */
 function updateUI() {
   const ns = trafficSystem.northSouth;
   const ew = trafficSystem.eastWest;
@@ -93,10 +94,6 @@ function updateUI() {
   }
 }
 
-/* ========== logEvent() ==========
- * Control Flow: Appends a timestamped message to the System Logs list. Runs
- * synchronously. Used to record state changes for debugging and education.
- */
 function logEvent(message) {
   if (!logList) return;
   const li = document.createElement('li');
@@ -106,97 +103,128 @@ function logEvent(message) {
   logList.scrollTop = logList.scrollHeight;
 }
 
-/* ========== transitionLights() ==========
- * Async function that performs one full transition cycle with Yellow buffer.
- * Control Flow:
- *   1. If a transition is already running, return immediately (race protection).
- *   2. Set transitionInProgress = true so further clicks are ignored.
- *   3. If NS is green: NS -> Yellow (3s) -> Red, wait 1s, then EW -> Green.
- *   4. If EW is green: EW -> Yellow (3s) -> Red, wait 1s, then NS -> Green.
- *   5. Clear transitionInProgress and re-enable the button.
- * Event Loop: Each await yields to the event loop; after the timeout, the
- * engine resumes this function. This prevents blocking the main thread while
- * waiting. No two lights are ever Green or Yellow at the same time because
- * we only set one direction to green after the other is fully red + 1s buffer.
+/* ========== TIMER CONTROL HELPERS ========== */
+function sanitizeSeconds(value, fallbackSeconds) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackSeconds;
+  return Math.max(1, Math.round(parsed));
+}
+
+function applyCycleTimingFromSeconds(seconds) {
+  const safeSeconds = sanitizeSeconds(seconds, timerSettings.autoDefaultSeconds);
+  const mainGreenMs = safeSeconds * 1000;
+
+  timerSettings.activeSeconds = safeSeconds;
+  TIMER_DELAYS.mainGreenMs = mainGreenMs;
+
+  // Keep yellow and all-red simple, scaled from selected green time.
+  TIMER_DELAYS.vehicleYellowMs = Math.max(2000, Math.round(mainGreenMs * 0.2));
+  TIMER_DELAYS.allRedBufferMs = Math.max(1000, Math.round(mainGreenMs * 0.1));
+}
+
+function refreshTimerControlUI() {
+  if (!timerModeSelect || !timerSecondsInput || !timerHelpText) return;
+
+  const isAutomatic = timerSettings.mode === 'automatic';
+  timerSecondsInput.disabled = isAutomatic;
+
+  if (isAutomatic) {
+    timerSecondsInput.value = String(timerSettings.autoDefaultSeconds);
+    timerHelpText.textContent = 'Automatic mode uses 15 seconds per green phase.';
+  } else {
+    timerHelpText.textContent = `Custom mode uses ${timerSettings.activeSeconds} seconds per green phase.`;
+  }
+}
+
+function applyTimerSettingsFromControls() {
+  if (!timerModeSelect || !timerSecondsInput) return;
+
+  timerSettings.mode = timerModeSelect.value === 'custom' ? 'custom' : 'automatic';
+
+  if (timerSettings.mode === 'automatic') {
+    applyCycleTimingFromSeconds(timerSettings.autoDefaultSeconds);
+  } else {
+    const validSeconds = sanitizeSeconds(timerSecondsInput.value, timerSettings.customSeconds);
+    timerSettings.customSeconds = validSeconds;
+    timerSecondsInput.value = String(validSeconds);
+    applyCycleTimingFromSeconds(validSeconds);
+  }
+
+  refreshTimerControlUI();
+  restartAutomaticTrafficCycle();
+  logEvent(`Timer updated: ${timerSettings.activeSeconds}s green phase.`);
+}
+
+/* ========== TRAFFIC TRANSITION LOGIC ==========
+ * One complete switch from the current green lane to the opposite lane.
  */
 async function transitionLights() {
   if (trafficSystem.transitionInProgress) {
-    logEvent('Ignored: transition already in progress.');
     return;
   }
 
   trafficSystem.transitionInProgress = true;
-  if (transitionBtn) transitionBtn.disabled = true;
   if (pedestrianBtn) pedestrianBtn.disabled = true;
-  logEvent('Transition started.');
 
   try {
     if (trafficSystem.northSouth === 'green') {
-      // NS was green -> turn NS yellow, then red, then EW green
       trafficSystem.northSouth = 'yellow';
       trafficSystem.eastWest = 'red';
       updateUI();
-      logEvent('N-S → Yellow (buffer 3s).');
-
       await wait(TIMER_DELAYS.vehicleYellowMs);
 
       trafficSystem.northSouth = 'red';
       updateUI();
-      logEvent('N-S → Red.');
-
       await wait(TIMER_DELAYS.allRedBufferMs);
 
       trafficSystem.eastWest = 'green';
       updateUI();
-      logEvent('E-W → Green.');
-    } else if (trafficSystem.eastWest === 'green') {
-      // EW was green -> turn EW yellow, then red, then NS green
+      logEvent('Cycle: E-W is now GREEN.');
+    } else {
       trafficSystem.eastWest = 'yellow';
       trafficSystem.northSouth = 'red';
       updateUI();
-      logEvent('E-W → Yellow (buffer 3s).');
-
       await wait(TIMER_DELAYS.vehicleYellowMs);
 
       trafficSystem.eastWest = 'red';
       updateUI();
-      logEvent('E-W → Red.');
-
       await wait(TIMER_DELAYS.allRedBufferMs);
 
       trafficSystem.northSouth = 'green';
       updateUI();
-      logEvent('N-S → Green.');
+      logEvent('Cycle: N-S is now GREEN.');
     }
-    logEvent('Transition complete.');
   } finally {
     trafficSystem.transitionInProgress = false;
-    if (transitionBtn) transitionBtn.disabled = false;
     if (pedestrianBtn) pedestrianBtn.disabled = false;
   }
 }
 
-/* ========== handleLogic() ==========
- * Event handler for the "Switch Direction" button. Control Flow: Called by the
- * Event Loop when the user clicks (macrotask). It does not block; it starts
- * transitionLights() which uses async/await and yields during waits. Clicks
- * during transition are ignored because transitionLights() returns early when
- * transitionInProgress is true, and the button is disabled during transition.
- */
-function handleLogic() {
-  transitionLights();
+/* Automatic cycle: wait selected green time, then trigger next transition. */
+function scheduleNextAutomaticCycle() {
+  if (timerState.autoCycleTimeout) {
+    clearTimeout(timerState.autoCycleTimeout);
+    timerState.autoCycleTimeout = null;
+  }
+
+  timerState.autoCycleTimeout = setTimeout(async function () {
+    timerState.autoCycleTimeout = null;
+
+    if (trafficSystem.transitionInProgress) {
+      scheduleNextAutomaticCycle();
+      return;
+    }
+
+    await transitionLights();
+    scheduleNextAutomaticCycle();
+  }, TIMER_DELAYS.mainGreenMs);
 }
 
-/* ========== runPedestrianSequence() ==========
- * Async sequence for pedestrian crossing:
- *   - Starts from current vehicle state; brings any green direction safely to red.
- *   - Total time ~7 seconds from button press until pedestrian green.
- *   - First ~3s: whichever vehicle direction is green turns yellow then red.
- *   - Next 4s: pedestrian shows yellow countdown, then turns green once both
- *     vehicle directions are fully red.
- * Event Loop: Uses await with setTimeout-based Promises to yield control while
- * waiting so the UI stays responsive.
- */
+function restartAutomaticTrafficCycle() {
+  scheduleNextAutomaticCycle();
+}
+
+/* Keep pedestrian behavior available, but unchanged for timer branch scope. */
 async function runPedestrianSequence() {
   if (trafficSystem.transitionInProgress) {
     logEvent('Ignored pedestrian request: transition already in progress.');
@@ -204,148 +232,78 @@ async function runPedestrianSequence() {
   }
 
   trafficSystem.transitionInProgress = true;
-  if (transitionBtn) transitionBtn.disabled = true;
   if (pedestrianBtn) pedestrianBtn.disabled = true;
   logEvent('Pedestrian request received.');
 
   try {
-    // Phase 1 (~3s): bring any green vehicle direction to red.
     if (trafficSystem.eastWest === 'green') {
       trafficSystem.eastWest = 'yellow';
       trafficSystem.pedestrian = 'red';
       updateUI();
-      logEvent('Pedestrian phase: E-W → Yellow (3s).');
-
       await wait(TIMER_DELAYS.pedestrianPrepMs);
-
       trafficSystem.eastWest = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: E-W → Red.');
     } else if (trafficSystem.northSouth === 'green') {
       trafficSystem.northSouth = 'yellow';
       trafficSystem.pedestrian = 'red';
       updateUI();
-      logEvent('Pedestrian phase: N-S → Yellow (3s).');
-
       await wait(TIMER_DELAYS.pedestrianPrepMs);
-
       trafficSystem.northSouth = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: N-S → Red.');
-    } else {
-      // Already all red; just wait 3s to preserve overall timing.
-      trafficSystem.pedestrian = 'red';
-      updateUI();
-      logEvent('Pedestrian phase: vehicles already red, waiting 3s.');
-      await wait(TIMER_DELAYS.pedestrianPrepMs);
     }
 
-    // Ensure both directions are hard red before granting walk.
     trafficSystem.northSouth = 'red';
     trafficSystem.eastWest = 'red';
-    updateUI();
-
-    // Phase 2 (4s): pedestrian yellow countdown then green.
     trafficSystem.pedestrian = 'yellow';
     updateUI();
-    logEvent('Pedestrian → Yellow (4s before walk).');
-
     await wait(TIMER_DELAYS.pedestrianYellowMs);
 
     trafficSystem.pedestrian = 'green';
     updateUI();
-    logEvent('Pedestrian → Green (walk). Both vehicle directions are Red.');
+    logEvent('Pedestrian walk signal is GREEN.');
   } finally {
     trafficSystem.transitionInProgress = false;
-    if (transitionBtn) transitionBtn.disabled = false;
     if (pedestrianBtn) pedestrianBtn.disabled = false;
   }
 }
 
-/* ========== handlePedestrianRequest() ==========
- * Click handler for the pedestrian button. Delegates to the async sequence
- * without blocking the main thread.
- */
 function handlePedestrianRequest() {
   runPedestrianSequence();
 }
 
-/* ========== handleManualColor() ==========
- * Event handler for manual color buttons. Control Flow: Validates that we are
- * not mid-transition, preserves safety (won't allow two directions to be
- * green/yellow at once), updates state, then calls updateUI().
- * Event Loop: Called in response to a click event (macrotask). Runs
- * synchronously; does not block because it performs no waiting itself.
- */
-function handleManualColor(direction, color) {
-  if (trafficSystem.transitionInProgress) {
-    logEvent('Ignored manual change: transition in progress.');
-    return;
-  }
-
-  const isNorthSouth = direction === 'ns';
-  const thisKey = isNorthSouth ? 'northSouth' : 'eastWest';
-  const otherKey = isNorthSouth ? 'eastWest' : 'northSouth';
-
-  // Safety: never allow both directions to be green or yellow at once.
-  if ((color === 'green' || color === 'yellow') &&
-      (trafficSystem[otherKey] === 'green' || trafficSystem[otherKey] === 'yellow')) {
-    logEvent(`Ignored manual ${direction.toUpperCase()} ${color}: other direction not fully red.`);
-    return;
-  }
-
-  trafficSystem[thisKey] = color;
-  // Any vehicle non-red state should force pedestrians back to red for safety.
-  if (color === 'green' || color === 'yellow') {
-    trafficSystem.pedestrian = 'red';
-  }
-  updateUI();
-  logEvent(`Manual override: ${direction.toUpperCase()} → ${color[0].toUpperCase()}${color.slice(1)}.`);
-}
-
-/* ========== init() ==========
- * Control Flow: Runs once when the script loads. DOM must be ready (script at
- * end of body). Binds DOM references, sets initial UI from trafficSystem, and
- * attaches the click listener. Event Loop: addEventListener registers a
- * callback; it does not run until the user clicks, at which point the loop
- * invokes handleLogic.
- */
 function init() {
-  transitionBtn = document.querySelector('#transition-btn');
   pedestrianBtn = document.querySelector('#pedestrian-btn');
   logList = document.querySelector('#log-list');
-  colorButtons = Array.from(document.querySelectorAll('.color-btn'));
+  timerModeSelect = document.querySelector('#timer-mode');
+  timerSecondsInput = document.querySelector('#timer-seconds');
+  timerHelpText = document.querySelector('#timer-help-text');
 
-  lightElements.ns.red    = document.querySelector('#ns-red');
+  lightElements.ns.red = document.querySelector('#ns-red');
   lightElements.ns.yellow = document.querySelector('#ns-yellow');
-  lightElements.ns.green  = document.querySelector('#ns-green');
-  lightElements.ew.red    = document.querySelector('#ew-red');
+  lightElements.ns.green = document.querySelector('#ns-green');
+  lightElements.ew.red = document.querySelector('#ew-red');
   lightElements.ew.yellow = document.querySelector('#ew-yellow');
-  lightElements.ew.green  = document.querySelector('#ew-green');
-  lightElements.ped.red    = document.querySelector('#ped-red');
+  lightElements.ew.green = document.querySelector('#ew-green');
+  lightElements.ped.red = document.querySelector('#ped-red');
   lightElements.ped.yellow = document.querySelector('#ped-yellow');
-  lightElements.ped.green  = document.querySelector('#ped-green');
+  lightElements.ped.green = document.querySelector('#ped-green');
 
   updateUI();
   logEvent('System ready. N-S Green, E-W Red.');
 
-  if (transitionBtn) {
-    transitionBtn.addEventListener('click', handleLogic);
-  }
   if (pedestrianBtn) {
     pedestrianBtn.addEventListener('click', handlePedestrianRequest);
   }
+  if (timerModeSelect) {
+    timerModeSelect.addEventListener('change', applyTimerSettingsFromControls);
+  }
+  if (timerSecondsInput) {
+    timerSecondsInput.addEventListener('change', applyTimerSettingsFromControls);
+    timerSecondsInput.addEventListener('blur', applyTimerSettingsFromControls);
+  }
 
-  // Bind manual color buttons for each direction.
-  colorButtons.forEach((btn) => {
-    const dir = btn.getAttribute('data-dir');
-    const color = btn.getAttribute('data-color');
-    btn.addEventListener('click', () => handleManualColor(dir, color));
-  });
+  // Start automatic mode (15 seconds) on load.
+  applyTimerSettingsFromControls();
+  logEvent('Automatic timer cycle started.');
 }
 
-/* Cleanup timer resources when leaving/reloading the page. */
 window.addEventListener('beforeunload', clearAllPendingTimers);
-
-/* Start the application when the script executes. */
 init();

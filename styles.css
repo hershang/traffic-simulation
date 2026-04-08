@@ -106,6 +106,7 @@ body {
   border-radius: inherit;
 }
 
+.simulation .timer-controls,
 .simulation .intersection-container,
 .simulation .transition-btn,
 .simulation .pedestrian-btn {
@@ -113,17 +114,20 @@ body {
   z-index: 1;
 }
 
-/* Manual controls panel (left side on larger screens) */
-.manual-controls {
+/* Timer controls panel */
+.timer-controls {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  padding: 0.5rem 0.75rem;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
 }
 
-.manual-title {
+.timer-title {
   margin: 0 0 0.25rem 0;
   font-size: 0.85rem;
   font-weight: 600;
@@ -132,50 +136,38 @@ body {
   color: var(--text-muted);
 }
 
-.control-group {
+.timer-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
 }
 
-.control-buttons {
-  display: flex;
-  gap: 0.4rem;
+.timer-row label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
 }
 
-.color-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+.timer-row select,
+.timer-row input {
+  min-width: 120px;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: rgba(13, 17, 23, 0.9);
+  color: var(--text);
+  font-size: 0.85rem;
 }
 
-.color-btn-red {
-  background: radial-gradient(circle at 30% 30%, #ffb3ae, var(--red));
+.timer-row input:disabled {
+  opacity: 0.6;
 }
 
-.color-btn-yellow {
-  background: radial-gradient(circle at 30% 30%, #ffe7a6, var(--yellow));
-}
-
-.color-btn-green {
-  background: radial-gradient(circle at 30% 30%, #b9ffcc, var(--green));
-}
-
-.color-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.45);
-  border-color: rgba(255, 255, 255, 0.6);
-}
-
-.color-btn:active {
-  transform: translateY(0);
-  box-shadow: none;
+.timer-help {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.35;
 }
 
 .intersection-container {
