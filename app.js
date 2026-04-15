@@ -1,11 +1,8 @@
 /**
- * Intelligent Traffic Control Dashboard — Timer Branch Logic
- * Focus: automatic light cycling with selectable timer duration.
+ * Intelligent Traffic Control Dashboard — Timer-Focused Branch
+ * This branch centers on countdown state, timer loop, and control behavior.
  */
 
-/* ========== STATE OBJECT ==========
- * Single source of truth for the current visible light states.
- */
 const trafficSystem = {
   northSouth: 'green',
   eastWest: 'red',
@@ -13,38 +10,37 @@ const trafficSystem = {
   transitionInProgress: false
 };
 
-/* ========== TIMER CONFIG ==========
- * mainGreenMs: selected duration for each green phase.
- * vehicleYellowMs/allRedBufferMs scale from mainGreenMs.
- */
-const TIMER_DELAYS = {
-  mainGreenMs: 15000,
-  vehicleYellowMs: 3000,
-  allRedBufferMs: 1500,
-  pedestrianPrepMs: 3000,
-  pedestrianYellowMs: 4000
-};
-
-/* Track active timer IDs so we can cleanly stop/restart. */
+/* TIMER STATE */
 const timerState = {
-  pendingTimeouts: new Set(),
-  autoCycleTimeout: null
-};
-
-/* Timer settings shown in the UI. */
-const timerSettings = {
   mode: 'automatic',
+  autoDefaultSeconds: 15,
   customSeconds: 15,
   activeSeconds: 15,
-  autoDefaultSeconds: 15
+  greenSeconds: 15,
+  yellowSeconds: 3,
+  redSeconds: 3,
+  pedestrianSeconds: 0,
+  phase: 'ns_green',
+  phaseRemaining: 15,
+  intervalId: null,
+  isRunning: false,
+  isPaused: false
 };
 
-/** DOM element references */
 let pedestrianBtn = null;
 let logList = null;
 let timerModeSelect = null;
 let timerSecondsInput = null;
 let timerHelpText = null;
+let timerPauseBtn = null;
+let timerRestartBtn = null;
+let timerResetBtn = null;
+let timerStopBtn = null;
+let timerPhaseLabel = null;
+let countGreen = null;
+let countYellow = null;
+let countRed = null;
+let countPed = null;
 
 const lightElements = {
   ns: { red: null, yellow: null, green: null },
@@ -52,24 +48,19 @@ const lightElements = {
   ped: { red: null, yellow: null, green: null }
 };
 
-function wait(ms) {
-  return new Promise((resolve) => {
-    const timeoutId = setTimeout(() => {
-      timerState.pendingTimeouts.delete(timeoutId);
-      resolve();
-    }, ms);
-    timerState.pendingTimeouts.add(timeoutId);
-  });
+function logEvent(message) {
+  if (!logList) return;
+  const li = document.createElement('li');
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+  li.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
+  logList.appendChild(li);
+  logList.scrollTop = logList.scrollHeight;
 }
 
-function clearAllPendingTimers() {
-  timerState.pendingTimeouts.forEach((timeoutId) => clearTimeout(timeoutId));
-  timerState.pendingTimeouts.clear();
-
-  if (timerState.autoCycleTimeout) {
-    clearTimeout(timerState.autoCycleTimeout);
-    timerState.autoCycleTimeout = null;
-  }
+function sanitizeSeconds(value, fallbackSeconds) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackSeconds;
+  return Math.max(1, Math.round(parsed));
 }
 
 function updateUI() {
@@ -94,179 +85,254 @@ function updateUI() {
   }
 }
 
-function logEvent(message) {
-  if (!logList) return;
-  const li = document.createElement('li');
-  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
-  li.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
-  logList.appendChild(li);
-  logList.scrollTop = logList.scrollHeight;
+function getPhaseLabel(phase) {
+  switch (phase) {
+    case 'ns_green':
+      return 'Phase: N-S Green';
+    case 'ns_yellow':
+      return 'Phase: N-S Yellow';
+    case 'ew_green':
+      return 'Phase: E-W Green';
+    case 'ew_yellow':
+      return 'Phase: E-W Yellow';
+    case 'ped_walk':
+      return 'Phase: Pedestrian Walk';
+    default:
+      return 'Phase: Idle';
+  }
 }
 
-/* ========== TIMER CONTROL HELPERS ========== */
-function sanitizeSeconds(value, fallbackSeconds) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackSeconds;
-  return Math.max(1, Math.round(parsed));
+/* COUNTDOWN DISPLAY */
+function updateCountdownDisplay() {
+  if (!timerPhaseLabel || !countGreen || !countYellow || !countRed || !countPed) return;
+
+  timerPhaseLabel.textContent = getPhaseLabel(timerState.phase);
+
+  const green = (timerState.phase === 'ns_green' || timerState.phase === 'ew_green')
+    ? timerState.phaseRemaining
+    : 0;
+  const yellow = (timerState.phase === 'ns_yellow' || timerState.phase === 'ew_yellow')
+    ? timerState.phaseRemaining
+    : 0;
+  const pedestrian = timerState.phase === 'ped_walk' ? timerState.phaseRemaining : 0;
+  const red = (timerState.phase === 'ns_green' || timerState.phase === 'ns_yellow' || timerState.phase === 'ped_walk')
+    ? timerState.redSeconds
+    : timerState.phaseRemaining;
+
+  countGreen.textContent = `${green}s`;
+  countYellow.textContent = `${yellow}s`;
+  countRed.textContent = `${Math.max(0, red)}s`;
+  countPed.textContent = `${pedestrian}s`;
 }
 
-function applyCycleTimingFromSeconds(seconds) {
-  const safeSeconds = sanitizeSeconds(seconds, timerSettings.autoDefaultSeconds);
-  const mainGreenMs = safeSeconds * 1000;
+function applyPhaseState() {
+  switch (timerState.phase) {
+    case 'ns_green':
+      trafficSystem.northSouth = 'green';
+      trafficSystem.eastWest = 'red';
+      trafficSystem.pedestrian = 'red';
+      break;
+    case 'ns_yellow':
+      trafficSystem.northSouth = 'yellow';
+      trafficSystem.eastWest = 'red';
+      trafficSystem.pedestrian = 'red';
+      break;
+    case 'ew_green':
+      trafficSystem.northSouth = 'red';
+      trafficSystem.eastWest = 'green';
+      trafficSystem.pedestrian = 'red';
+      break;
+    case 'ew_yellow':
+      trafficSystem.northSouth = 'red';
+      trafficSystem.eastWest = 'yellow';
+      trafficSystem.pedestrian = 'red';
+      break;
+    case 'ped_walk':
+      trafficSystem.northSouth = 'red';
+      trafficSystem.eastWest = 'red';
+      trafficSystem.pedestrian = 'green';
+      break;
+    default:
+      trafficSystem.northSouth = 'red';
+      trafficSystem.eastWest = 'red';
+      trafficSystem.pedestrian = 'red';
+  }
 
-  timerSettings.activeSeconds = safeSeconds;
-  TIMER_DELAYS.mainGreenMs = mainGreenMs;
+  updateUI();
+  updateCountdownDisplay();
+}
 
-  // Keep yellow and all-red simple, scaled from selected green time.
-  TIMER_DELAYS.vehicleYellowMs = Math.max(2000, Math.round(mainGreenMs * 0.2));
-  TIMER_DELAYS.allRedBufferMs = Math.max(1000, Math.round(mainGreenMs * 0.1));
+function getNextPhase(currentPhase) {
+  switch (currentPhase) {
+    case 'ns_green':
+      return 'ns_yellow';
+    case 'ns_yellow':
+      return 'ew_green';
+    case 'ew_green':
+      return 'ew_yellow';
+    case 'ew_yellow':
+      return 'ns_green';
+    case 'ped_walk':
+      return 'ns_green';
+    default:
+      return 'ns_green';
+  }
+}
+
+function getSecondsForPhase(phase) {
+  if (phase === 'ns_green' || phase === 'ew_green') return timerState.greenSeconds;
+  if (phase === 'ns_yellow' || phase === 'ew_yellow') return timerState.yellowSeconds;
+  if (phase === 'ped_walk') return timerState.pedestrianSeconds;
+  return timerState.greenSeconds;
+}
+
+function advanceToNextPhase() {
+  const previousPhase = timerState.phase;
+  timerState.phase = getNextPhase(timerState.phase);
+  timerState.phaseRemaining = getSecondsForPhase(timerState.phase);
+  if (previousPhase === 'ped_walk') {
+    trafficSystem.transitionInProgress = false;
+  }
+  applyPhaseState();
+
+  if (timerState.phase === 'ns_green') {
+    logEvent('Cycle: N-S is now GREEN.');
+  } else if (timerState.phase === 'ew_green') {
+    logEvent('Cycle: E-W is now GREEN.');
+  }
+}
+
+/* TIMER LOOP */
+function runTimerTick() {
+  if (!timerState.isRunning || timerState.isPaused) {
+    return;
+  }
+
+  timerState.phaseRemaining -= 1;
+  if (timerState.phaseRemaining <= 0) {
+    advanceToNextPhase();
+    return;
+  }
+
+  updateCountdownDisplay();
+}
+
+function startTimerLoop() {
+  clearInterval(timerState.intervalId);
+  timerState.intervalId = setInterval(runTimerTick, 1000);
+  timerState.isRunning = true;
+  timerState.isPaused = false;
+}
+
+function stopTimerLoop() {
+  clearInterval(timerState.intervalId);
+  timerState.intervalId = null;
+  timerState.isRunning = false;
+}
+
+function setCycleTimingFromSeconds(seconds) {
+  const safeSeconds = sanitizeSeconds(seconds, timerState.autoDefaultSeconds);
+  timerState.activeSeconds = safeSeconds;
+  timerState.greenSeconds = safeSeconds;
+  timerState.yellowSeconds = Math.max(2, Math.round(safeSeconds * 0.2));
+  timerState.redSeconds = timerState.greenSeconds + timerState.yellowSeconds;
+  timerState.pedestrianSeconds = Math.max(4, Math.round(safeSeconds * 0.3));
 }
 
 function refreshTimerControlUI() {
-  if (!timerModeSelect || !timerSecondsInput || !timerHelpText) return;
+  if (!timerModeSelect || !timerSecondsInput || !timerHelpText || !timerPauseBtn) return;
 
-  const isAutomatic = timerSettings.mode === 'automatic';
+  const isAutomatic = timerState.mode === 'automatic';
   timerSecondsInput.disabled = isAutomatic;
 
   if (isAutomatic) {
-    timerSecondsInput.value = String(timerSettings.autoDefaultSeconds);
+    timerSecondsInput.value = String(timerState.autoDefaultSeconds);
     timerHelpText.textContent = 'Automatic mode uses 15 seconds per green phase.';
   } else {
-    timerHelpText.textContent = `Custom mode uses ${timerSettings.activeSeconds} seconds per green phase.`;
+    timerHelpText.textContent = `Custom mode uses ${timerState.activeSeconds} seconds per green phase.`;
   }
+
+  timerPauseBtn.textContent = timerState.isPaused ? 'Resume' : 'Pause';
 }
 
 function applyTimerSettingsFromControls() {
   if (!timerModeSelect || !timerSecondsInput) return;
 
-  timerSettings.mode = timerModeSelect.value === 'custom' ? 'custom' : 'automatic';
-
-  if (timerSettings.mode === 'automatic') {
-    applyCycleTimingFromSeconds(timerSettings.autoDefaultSeconds);
+  timerState.mode = timerModeSelect.value === 'custom' ? 'custom' : 'automatic';
+  if (timerState.mode === 'automatic') {
+    setCycleTimingFromSeconds(timerState.autoDefaultSeconds);
   } else {
-    const validSeconds = sanitizeSeconds(timerSecondsInput.value, timerSettings.customSeconds);
-    timerSettings.customSeconds = validSeconds;
+    const validSeconds = sanitizeSeconds(timerSecondsInput.value, timerState.customSeconds);
+    timerState.customSeconds = validSeconds;
     timerSecondsInput.value = String(validSeconds);
-    applyCycleTimingFromSeconds(validSeconds);
+    setCycleTimingFromSeconds(validSeconds);
   }
 
+  restartTimerLoop();
   refreshTimerControlUI();
-  restartAutomaticTrafficCycle();
-  logEvent(`Timer updated: ${timerSettings.activeSeconds}s green phase.`);
+  logEvent(`Timer updated: ${timerState.activeSeconds}s green phase.`);
 }
 
-/* ========== TRAFFIC TRANSITION LOGIC ==========
- * One complete switch from the current green lane to the opposite lane.
- */
-async function transitionLights() {
-  if (trafficSystem.transitionInProgress) {
+/* TIMER RESET/STOP */
+function resetTimerState() {
+  stopTimerLoop();
+  timerState.phase = 'ns_green';
+  timerState.phaseRemaining = timerState.greenSeconds;
+  timerState.isPaused = false;
+  trafficSystem.transitionInProgress = false;
+  applyPhaseState();
+  refreshTimerControlUI();
+}
+
+function pauseOrResumeTimerLoop() {
+  if (!timerState.isRunning) {
+    startTimerLoop();
+    logEvent('Timer started from paused/stopped state.');
+    refreshTimerControlUI();
     return;
   }
 
-  trafficSystem.transitionInProgress = true;
-  if (pedestrianBtn) pedestrianBtn.disabled = true;
-
-  try {
-    if (trafficSystem.northSouth === 'green') {
-      trafficSystem.northSouth = 'yellow';
-      trafficSystem.eastWest = 'red';
-      updateUI();
-      await wait(TIMER_DELAYS.vehicleYellowMs);
-
-      trafficSystem.northSouth = 'red';
-      updateUI();
-      await wait(TIMER_DELAYS.allRedBufferMs);
-
-      trafficSystem.eastWest = 'green';
-      updateUI();
-      logEvent('Cycle: E-W is now GREEN.');
-    } else {
-      trafficSystem.eastWest = 'yellow';
-      trafficSystem.northSouth = 'red';
-      updateUI();
-      await wait(TIMER_DELAYS.vehicleYellowMs);
-
-      trafficSystem.eastWest = 'red';
-      updateUI();
-      await wait(TIMER_DELAYS.allRedBufferMs);
-
-      trafficSystem.northSouth = 'green';
-      updateUI();
-      logEvent('Cycle: N-S is now GREEN.');
-    }
-  } finally {
-    trafficSystem.transitionInProgress = false;
-    if (pedestrianBtn) pedestrianBtn.disabled = false;
-  }
+  timerState.isPaused = !timerState.isPaused;
+  logEvent(timerState.isPaused ? 'Timer paused.' : 'Timer resumed.');
+  refreshTimerControlUI();
 }
 
-/* Automatic cycle: wait selected green time, then trigger next transition. */
-function scheduleNextAutomaticCycle() {
-  if (timerState.autoCycleTimeout) {
-    clearTimeout(timerState.autoCycleTimeout);
-    timerState.autoCycleTimeout = null;
-  }
-
-  timerState.autoCycleTimeout = setTimeout(async function () {
-    timerState.autoCycleTimeout = null;
-
-    if (trafficSystem.transitionInProgress) {
-      scheduleNextAutomaticCycle();
-      return;
-    }
-
-    await transitionLights();
-    scheduleNextAutomaticCycle();
-  }, TIMER_DELAYS.mainGreenMs);
+function stopTimerState() {
+  stopTimerLoop();
+  timerState.isPaused = false;
+  timerState.phase = 'ns_green';
+  timerState.phaseRemaining = timerState.greenSeconds;
+  trafficSystem.northSouth = 'red';
+  trafficSystem.eastWest = 'red';
+  trafficSystem.pedestrian = 'red';
+  updateUI();
+  updateCountdownDisplay();
+  refreshTimerControlUI();
+  logEvent('Timer stopped. All signals set to red.');
 }
 
-function restartAutomaticTrafficCycle() {
-  scheduleNextAutomaticCycle();
+function restartTimerLoop() {
+  resetTimerState();
+  startTimerLoop();
+  refreshTimerControlUI();
+  logEvent('Timer restarted.');
 }
 
-/* Keep pedestrian behavior available, but unchanged for timer branch scope. */
-async function runPedestrianSequence() {
+function runPedestrianSequence() {
   if (trafficSystem.transitionInProgress) {
     logEvent('Ignored pedestrian request: transition already in progress.');
     return;
   }
+  if (!timerState.isRunning || timerState.isPaused) {
+    logEvent('Ignored pedestrian request: timer is not actively running.');
+    return;
+  }
 
   trafficSystem.transitionInProgress = true;
-  if (pedestrianBtn) pedestrianBtn.disabled = true;
-  logEvent('Pedestrian request received.');
-
-  try {
-    if (trafficSystem.eastWest === 'green') {
-      trafficSystem.eastWest = 'yellow';
-      trafficSystem.pedestrian = 'red';
-      updateUI();
-      await wait(TIMER_DELAYS.pedestrianPrepMs);
-      trafficSystem.eastWest = 'red';
-    } else if (trafficSystem.northSouth === 'green') {
-      trafficSystem.northSouth = 'yellow';
-      trafficSystem.pedestrian = 'red';
-      updateUI();
-      await wait(TIMER_DELAYS.pedestrianPrepMs);
-      trafficSystem.northSouth = 'red';
-    }
-
-    trafficSystem.northSouth = 'red';
-    trafficSystem.eastWest = 'red';
-    trafficSystem.pedestrian = 'yellow';
-    updateUI();
-    await wait(TIMER_DELAYS.pedestrianYellowMs);
-
-    trafficSystem.pedestrian = 'green';
-    updateUI();
-    logEvent('Pedestrian walk signal is GREEN.');
-  } finally {
-    trafficSystem.transitionInProgress = false;
-    if (pedestrianBtn) pedestrianBtn.disabled = false;
-  }
-}
-
-function handlePedestrianRequest() {
-  runPedestrianSequence();
+  timerState.phase = 'ped_walk';
+  timerState.phaseRemaining = timerState.pedestrianSeconds;
+  applyPhaseState();
+  logEvent('Pedestrian walk signal is GREEN.');
 }
 
 function init() {
@@ -275,6 +341,15 @@ function init() {
   timerModeSelect = document.querySelector('#timer-mode');
   timerSecondsInput = document.querySelector('#timer-seconds');
   timerHelpText = document.querySelector('#timer-help-text');
+  timerPauseBtn = document.querySelector('#timer-pause-btn');
+  timerRestartBtn = document.querySelector('#timer-restart-btn');
+  timerResetBtn = document.querySelector('#timer-reset-btn');
+  timerStopBtn = document.querySelector('#timer-stop-btn');
+  timerPhaseLabel = document.querySelector('#timer-phase-label');
+  countGreen = document.querySelector('#count-green');
+  countYellow = document.querySelector('#count-yellow');
+  countRed = document.querySelector('#count-red');
+  countPed = document.querySelector('#count-ped');
 
   lightElements.ns.red = document.querySelector('#ns-red');
   lightElements.ns.yellow = document.querySelector('#ns-yellow');
@@ -286,24 +361,25 @@ function init() {
   lightElements.ped.yellow = document.querySelector('#ped-yellow');
   lightElements.ped.green = document.querySelector('#ped-green');
 
-  updateUI();
+  setCycleTimingFromSeconds(timerState.autoDefaultSeconds);
+  resetTimerState();
   logEvent('System ready. N-S Green, E-W Red.');
 
-  if (pedestrianBtn) {
-    pedestrianBtn.addEventListener('click', handlePedestrianRequest);
-  }
-  if (timerModeSelect) {
-    timerModeSelect.addEventListener('change', applyTimerSettingsFromControls);
-  }
+  if (pedestrianBtn) pedestrianBtn.addEventListener('click', runPedestrianSequence);
+  if (timerModeSelect) timerModeSelect.addEventListener('change', applyTimerSettingsFromControls);
   if (timerSecondsInput) {
     timerSecondsInput.addEventListener('change', applyTimerSettingsFromControls);
     timerSecondsInput.addEventListener('blur', applyTimerSettingsFromControls);
   }
+  if (timerPauseBtn) timerPauseBtn.addEventListener('click', pauseOrResumeTimerLoop);
+  if (timerRestartBtn) timerRestartBtn.addEventListener('click', restartTimerLoop);
+  if (timerResetBtn) timerResetBtn.addEventListener('click', resetTimerState);
+  if (timerStopBtn) timerStopBtn.addEventListener('click', stopTimerState);
 
-  // Start automatic mode (15 seconds) on load.
-  applyTimerSettingsFromControls();
+  startTimerLoop();
+  refreshTimerControlUI();
   logEvent('Automatic timer cycle started.');
 }
 
-window.addEventListener('beforeunload', clearAllPendingTimers);
+window.addEventListener('beforeunload', stopTimerLoop);
 init();

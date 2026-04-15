@@ -35,6 +35,21 @@
           <p class="timer-help" id="timer-help-text">
             Automatic mode uses 15 seconds per green phase.
           </p>
+
+          <div class="timer-status" aria-live="polite">
+            <p class="timer-phase" id="timer-phase-label">Phase: N-S Green</p>
+            <p class="timer-countdown-line"><span>Green</span><strong id="count-green">15s</strong></p>
+            <p class="timer-countdown-line"><span>Yellow</span><strong id="count-yellow">0s</strong></p>
+            <p class="timer-countdown-line"><span>Red</span><strong id="count-red">0s</strong></p>
+            <p class="timer-countdown-line"><span>Pedestrian</span><strong id="count-ped">0s</strong></p>
+          </div>
+
+          <div class="timer-actions" aria-label="Timer loop controls">
+            <button type="button" class="transition-btn timer-action-btn" id="timer-pause-btn">Pause</button>
+            <button type="button" class="transition-btn timer-action-btn" id="timer-restart-btn">Restart</button>
+            <button type="button" class="transition-btn timer-action-btn" id="timer-reset-btn">Reset</button>
+            <button type="button" class="transition-btn timer-action-btn" id="timer-stop-btn">Stop</button>
+          </div>
         </div>
 
         <div class="intersection-container">

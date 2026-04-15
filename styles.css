@@ -170,6 +170,49 @@ body {
   line-height: 1.35;
 }
 
+.timer-status {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.6rem;
+  border-radius: 10px;
+  background: rgba(13, 17, 23, 0.55);
+  border: 1px solid var(--glass-border);
+}
+
+.timer-phase {
+  margin: 0 0 0.15rem 0;
+  font-size: 0.8rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.timer-countdown-line {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.timer-countdown-line strong {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.timer-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.timer-action-btn {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.78rem;
+}
+
 .intersection-container {
   display: flex;
   flex-wrap: nowrap;            /* keep all three lanes on one row */
