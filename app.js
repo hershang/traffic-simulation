@@ -20,6 +20,10 @@ const timerState = {
   yellowSeconds: 3,
   redSeconds: 3,
   pedestrianSeconds: 0,
+  pedestrianSafeWaitSeconds: 7,
+  pedestrianRequested: false,
+  pedestrianActive: false,
+  pedestrianWaitLane: null,
   phase: 'ns_green',
   phaseRemaining: 15,
   intervalId: null,
@@ -97,6 +101,8 @@ function getPhaseLabel(phase) {
       return 'Phase: E-W Yellow';
     case 'ped_walk':
       return 'Phase: Pedestrian Walk';
+    case 'ped_wait':
+      return 'Phase: Pedestrian Wait (Cars Moving)';
     default:
       return 'Phase: Idle';
   }
@@ -114,7 +120,9 @@ function updateCountdownDisplay() {
   const yellow = (timerState.phase === 'ns_yellow' || timerState.phase === 'ew_yellow')
     ? timerState.phaseRemaining
     : 0;
-  const pedestrian = timerState.phase === 'ped_walk' ? timerState.phaseRemaining : 0;
+  const pedestrian = (timerState.phase === 'ped_walk' || timerState.phase === 'ped_wait')
+    ? timerState.phaseRemaining
+    : 0;
   const red = (timerState.phase === 'ns_green' || timerState.phase === 'ns_yellow' || timerState.phase === 'ped_walk')
     ? timerState.redSeconds
     : timerState.phaseRemaining;
@@ -152,6 +160,16 @@ function applyPhaseState() {
       trafficSystem.eastWest = 'red';
       trafficSystem.pedestrian = 'green';
       break;
+    case 'ped_wait':
+      if (timerState.pedestrianWaitLane === 'ns') {
+        trafficSystem.northSouth = 'green';
+        trafficSystem.eastWest = 'red';
+      } else {
+        trafficSystem.northSouth = 'red';
+        trafficSystem.eastWest = 'green';
+      }
+      trafficSystem.pedestrian = 'red';
+      break;
     default:
       trafficSystem.northSouth = 'red';
       trafficSystem.eastWest = 'red';
@@ -172,8 +190,10 @@ function getNextPhase(currentPhase) {
       return 'ew_yellow';
     case 'ew_yellow':
       return 'ns_green';
+    case 'ped_wait':
+      return 'ped_walk';
     case 'ped_walk':
-      return 'ns_green';
+      return timerState.pedestrianWaitLane === 'ns' ? 'ew_green' : 'ns_green';
     default:
       return 'ns_green';
   }
@@ -182,16 +202,37 @@ function getNextPhase(currentPhase) {
 function getSecondsForPhase(phase) {
   if (phase === 'ns_green' || phase === 'ew_green') return timerState.greenSeconds;
   if (phase === 'ns_yellow' || phase === 'ew_yellow') return timerState.yellowSeconds;
+  if (phase === 'ped_wait') return timerState.pedestrianSafeWaitSeconds;
   if (phase === 'ped_walk') return timerState.pedestrianSeconds;
   return timerState.greenSeconds;
 }
 
 function advanceToNextPhase() {
   const previousPhase = timerState.phase;
+
+  if (
+    timerState.pedestrianRequested &&
+    !timerState.pedestrianActive &&
+    (timerState.phase === 'ns_green' || timerState.phase === 'ew_green')
+  ) {
+    timerState.pedestrianActive = true;
+    timerState.pedestrianWaitLane = timerState.phase === 'ns_green' ? 'ns' : 'ew';
+    timerState.phase = 'ped_wait';
+    timerState.phaseRemaining = timerState.pedestrianSafeWaitSeconds;
+    trafficSystem.transitionInProgress = true;
+    applyPhaseState();
+    logEvent(`Pedestrian safety countdown started (${timerState.pedestrianSafeWaitSeconds}s).`);
+    return;
+  }
+
   timerState.phase = getNextPhase(timerState.phase);
   timerState.phaseRemaining = getSecondsForPhase(timerState.phase);
   if (previousPhase === 'ped_walk') {
     trafficSystem.transitionInProgress = false;
+    timerState.pedestrianActive = false;
+    timerState.pedestrianRequested = false;
+    timerState.pedestrianWaitLane = null;
+    logEvent('Pedestrian phase ended. Resuming normal traffic cycle.');
   }
   applyPhaseState();
 
@@ -212,6 +253,10 @@ function runTimerTick() {
   if (timerState.phaseRemaining <= 0) {
     advanceToNextPhase();
     return;
+  }
+
+  if (timerState.phase === 'ped_wait') {
+    logEvent(`Pedestrian safety countdown: ${timerState.phaseRemaining}s remaining.`);
   }
 
   updateCountdownDisplay();
@@ -276,6 +321,9 @@ function applyTimerSettingsFromControls() {
 /* TIMER RESET/STOP */
 function resetTimerState() {
   stopTimerLoop();
+  timerState.pedestrianRequested = false;
+  timerState.pedestrianActive = false;
+  timerState.pedestrianWaitLane = null;
   timerState.phase = 'ns_green';
   timerState.phaseRemaining = timerState.greenSeconds;
   timerState.isPaused = false;
@@ -300,6 +348,9 @@ function pauseOrResumeTimerLoop() {
 function stopTimerState() {
   stopTimerLoop();
   timerState.isPaused = false;
+  timerState.pedestrianRequested = false;
+  timerState.pedestrianActive = false;
+  timerState.pedestrianWaitLane = null;
   timerState.phase = 'ns_green';
   timerState.phaseRemaining = timerState.greenSeconds;
   trafficSystem.northSouth = 'red';
@@ -319,8 +370,8 @@ function restartTimerLoop() {
 }
 
 function runPedestrianSequence() {
-  if (trafficSystem.transitionInProgress) {
-    logEvent('Ignored pedestrian request: transition already in progress.');
+  if (timerState.pedestrianRequested || timerState.pedestrianActive || timerState.phase === 'ped_walk' || timerState.phase === 'ped_wait') {
+    logEvent('Ignored pedestrian request: request already pending/active.');
     return;
   }
   if (!timerState.isRunning || timerState.isPaused) {
@@ -328,11 +379,8 @@ function runPedestrianSequence() {
     return;
   }
 
-  trafficSystem.transitionInProgress = true;
-  timerState.phase = 'ped_walk';
-  timerState.phaseRemaining = timerState.pedestrianSeconds;
-  applyPhaseState();
-  logEvent('Pedestrian walk signal is GREEN.');
+  timerState.pedestrianRequested = true;
+  logEvent('Pedestrian request queued. Waiting for safe traffic phase.');
 }
 
 function init() {
